@@ -77,11 +77,24 @@ uint8_t ReedSolomon::gfMul(uint8_t a, uint8_t b)
   return expTable[(logTable[a] + logTable[b]) % (fieldSize - 1)];
 }
 
+uint8_t ReedSolomon::gfDiv(uint8_t a, uint8_t b)
+{
+  if (a == 0) return 0;
+  if (b == 0) throw std::domain_error("Division by zero");
+  return expTable[(logTable[a] + (fieldSize - 1) - logTable[b]) % (fieldSize - 1)];
+}
+
 uint8_t ReedSolomon::gfInv(uint8_t a)
 {
   if (a == 0)
     throw std::domain_error("Cannot invert 0 in Galois Field");
-  return expTable[fieldSize - 1 - logTable[a]];
+  return expTable[(fieldSize - 1) - logTable[a]];
+}
+
+uint8_t ReedSolomon::gfPow(uint8_t a, int power)
+{
+  if (a == 0) return 0;
+  return expTable[(logTable[a] * power) % (fieldSize - 1)];
 }
 
 std::vector<uint8_t> ReedSolomon::bitsToSymbols(const std::vector<bool> &bits)
@@ -209,77 +222,250 @@ std::vector<uint8_t> ReedSolomon::encodeSymbols(const std::vector<uint8_t> &data
   return codeword;
 }
 
-std::pair<std::vector<uint8_t>, int> ReedSolomon::decodeSymbols(const std::vector<uint8_t> &receivedSymbols)
-{
-  // This is a simplified decoder that can detect but not correct errors
-  // Full RS decoding would require syndrome computation, error locator polynomial, etc.
+std::vector<uint8_t> ReedSolomon::computeSyndrome(const std::vector<uint8_t>& received) {
+    // Compute syndrome values
+    std::vector<uint8_t> syndrome(2 * paritySize, 0);
 
-  // Check if the received word is a valid codeword
-  std::vector<uint8_t> syndrome(paritySize, 0);
-  int errorsDetected = 0;
-
-  // Calculate syndrome
-  for (int i = 0; i < paritySize; i++)
-  {
-    uint8_t eval = 0;
-    for (size_t j = 0; j < receivedSymbols.size(); j++)
-    {
-      // Evaluate received polynomial at a^i
-      eval ^= gfMul(receivedSymbols[j], expTable[(j * i) % (fieldSize - 1)]);
+    for (int i = 0; i < 2 * paritySize; i++) {
+        // Evaluate received polynomial at alpha^i
+        for (size_t j = 0; j < received.size(); j++) {
+            // syndrome[i] = syndrome[i] + received[j] * alpha^(i*j)
+            syndrome[i] ^= gfMul(received[j], gfPow(expTable[1], i * j));
+        }
     }
-    syndrome[i] = eval;
-    if (eval != 0)
-      errorsDetected++;
-  }
 
-  // Extract data symbols (we don't do actual error correction in this simplified version)
-  std::vector<uint8_t> dataSymbols(dataSize);
-  for (int i = 0; i < dataSize; i++)
-  {
-    dataSymbols[i] = receivedSymbols[i];
-  }
-
-  return {dataSymbols, errorsDetected > 0 ? 0 : 0};
+    return syndrome;
 }
 
-std::vector<bool> ReedSolomon::encode(const std::vector<bool> &input)
-{
-  // Convert bits to symbols
-  std::vector<uint8_t> symbols = bitsToSymbols(input);
+// New method: Berlekamp-Massey algorithm to find error locator polynomial
+std::vector<uint8_t> ReedSolomon::findErrorLocator(const std::vector<uint8_t>& syndrome) {
+    // Initialize error locator with 1
+    std::vector<uint8_t> errorLocator = {1};
+    std::vector<uint8_t> oldLocator = {1};
 
-  // Pad or truncate to match dataSize
-  if (symbols.size() < static_cast<size_t>(dataSize))
-  {
-    symbols.resize(dataSize, 0); // Pad with zeros
-  }
-  else if (symbols.size() > static_cast<size_t>(dataSize))
-  {
-    symbols.resize(dataSize); // Truncate
-  }
+    int L = 0; // Current error locator degree
+    int k = 0; // Number of iterations
+    uint8_t delta;
 
-  // Encode symbols
-  std::vector<uint8_t> encodedSymbols = encodeSymbols(symbols);
+    // Berlekamp-Massey algorithm
+    for (int n = 0; n < paritySize; n++) {
+        // Compute discrepancy
+        delta = syndrome[n];
+        for (int i = 1; i <= L; i++) {
+            if (i < static_cast<int>(errorLocator.size())) {
+                delta ^= gfMul(errorLocator[i], syndrome[n - i]);
+            }
+        }
 
-  // Convert back to bits
-  return symbolsToBits(encodedSymbols);
+        // Shift old_locator and append a zero
+        oldLocator.push_back(0);
+
+        if (delta != 0) {
+            if (2 * L <= n) {
+                // Update locator
+                std::vector<uint8_t> newLocator(std::max(errorLocator.size(), oldLocator.size()), 0);
+                for (size_t i = 0; i < errorLocator.size(); i++) {
+                    newLocator[i] ^= errorLocator[i];
+                }
+
+                for (size_t i = 0; i < oldLocator.size(); i++) {
+                    newLocator[i] ^= gfMul(delta, oldLocator[i]);
+                }
+
+                oldLocator = errorLocator;
+                errorLocator = newLocator;
+                L = n + 1 - L;
+            } else {
+                // Update locator
+                std::vector<uint8_t> newLocator(std::max(errorLocator.size(), oldLocator.size()), 0);
+                for (size_t i = 0; i < errorLocator.size(); i++) {
+                    newLocator[i] ^= errorLocator[i];
+                }
+
+                for (size_t i = 0; i < oldLocator.size(); i++) {
+                    newLocator[i] ^= gfMul(delta, oldLocator[i]);
+                }
+
+                errorLocator = newLocator;
+            }
+        }
+
+        k++;
+    }
+
+    return errorLocator;
 }
 
-std::pair<std::vector<bool>, int> ReedSolomon::decode(const std::vector<bool> &input)
-{
-  // Convert bits to symbols
-  std::vector<uint8_t> receivedSymbols = bitsToSymbols(input);
+// New method: Chien search to find error positions
+std::vector<int> ReedSolomon::findErrorPositions(const std::vector<uint8_t>& errorLocator) {
+    std::vector<int> errorPositions;
+    int n = dataSize + paritySize;
 
-  // Ensure we have the right number of symbols
-  if (receivedSymbols.size() != static_cast<size_t>(dataSize + paritySize))
-  {
-    return {{}, 0}; // Invalid input size
-  }
+    // For each position in the codeword
+    for (int i = 0; i < n; i++) {
+        // Evaluate error locator at alpha^(-i)
+        uint8_t sum = 0;
+        for (size_t j = 0; j < errorLocator.size(); j++) {
+            sum ^= gfMul(errorLocator[j], gfPow(expTable[1], (fieldSize - 1 - i) * j));
+        }
 
-  // Decode symbols
-  auto [decodedSymbols, errorsFixed] = decodeSymbols(receivedSymbols);
+        // If the sum is zero, we found a root
+        if (sum == 0) {
+            errorPositions.push_back(i);
+        }
+    }
 
-  // Convert back to bits
-  std::vector<bool> decodedBits = symbolsToBits(decodedSymbols);
+    // Reverse the error positions to be in ascending order
+    std::reverse(errorPositions.begin(), errorPositions.end());
+    return errorPositions;
+}
 
-  return {decodedBits, errorsFixed};
+// New method: Forney algorithm to find error values
+std::vector<uint8_t> ReedSolomon::findErrorValues(const std::vector<uint8_t>& syndrome,
+                                               const std::vector<int>& errorPositions) {
+    // Calculate formal derivative of error locator polynomial
+    std::vector<uint8_t> errorLocator = findErrorLocator(syndrome);
+    std::vector<uint8_t> errorEvaluator(paritySize, 0);
+
+    // Calculate error evaluator polynomial
+    for (int i = 0; i < paritySize; i++) {
+        uint8_t sum = 0;
+        for (int j = 0; j <= i; j++) {
+            if (j < static_cast<int>(errorLocator.size()) &&
+                i - j < static_cast<int>(syndrome.size())) {
+                sum ^= gfMul(errorLocator[j], syndrome[i - j]);
+            }
+        }
+        errorEvaluator[i] = sum;
+    }
+
+    // Calculate error values
+    std::vector<uint8_t> errorValues(errorPositions.size(), 0);
+    for (size_t i = 0; i < errorPositions.size(); i++) {
+        int xi = errorPositions[i];
+        uint8_t xi_inv = gfPow(expTable[1], fieldSize - 1 - xi);
+
+        // Calculate error evaluator at 1/xi
+        uint8_t eval = 0;
+        for (size_t j = 0; j < errorEvaluator.size(); j++) {
+            eval ^= gfMul(errorEvaluator[j], gfPow(xi_inv, j));
+        }
+
+        // Calculate formal derivative at xi
+        uint8_t deriv = 0;
+        for (size_t j = 1; j < errorLocator.size(); j++) {
+            if (j % 2 == 1) { // Only odd terms (derivative of x^2 is 0 in GF(2^m))
+                deriv ^= gfMul(errorLocator[j], gfPow(xi_inv, j - 1));
+            }
+        }
+
+        if (deriv == 0) {
+            // Cannot correct error at this position
+            continue;
+        }
+
+        // Calculate error value
+        errorValues[i] = gfDiv(eval, deriv);
+    }
+
+    return errorValues;
+}
+
+std::pair<std::vector<uint8_t>, int> ReedSolomon::decodeSymbols(const std::vector<uint8_t>& receivedSymbols) {
+    // Compute syndrome values
+    std::vector<uint8_t> syndrome = computeSyndrome(receivedSymbols);
+
+    // Check if syndrome is all zeros (no errors)
+    bool hasErrors = false;
+    for (size_t i = 0; i < syndrome.size(); i++) {
+        if (syndrome[i] != 0) {
+            hasErrors = true;
+            break;
+        }
+    }
+
+    std::vector<uint8_t> correctedSymbols = receivedSymbols;
+    int errorsFixed = 0;
+
+    if (hasErrors) {
+        try {
+            // Find error positions using Berlekamp-Massey and Chien search
+            std::vector<uint8_t> errorLocator = findErrorLocator(syndrome);
+            std::vector<int> errorPositions = findErrorPositions(errorLocator);
+
+            // Find error values using Forney algorithm
+            std::vector<uint8_t> errorValues = findErrorValues(syndrome, errorPositions);
+
+            // Correct errors
+            for (size_t i = 0; i < errorPositions.size(); i++) {
+                int pos = errorPositions[i];
+                if (pos < static_cast<int>(correctedSymbols.size())) {
+                    correctedSymbols[pos] ^= errorValues[i];
+                    errorsFixed++;
+                }
+            }
+
+            // Verify correction by recomputing syndrome
+            std::vector<uint8_t> checkSyndrome = computeSyndrome(correctedSymbols);
+            bool allZero = true;
+            for (size_t i = 0; i < checkSyndrome.size(); i++) {
+                if (checkSyndrome[i] != 0) {
+                    allZero = false;
+                    break;
+                }
+            }
+
+            // If syndrome is not all zeros, error correction failed
+            if (!allZero) {
+                errorsFixed = 0;  // Indicate failure
+            }
+        } catch (const std::exception& e) {
+            // Error correction failed
+            errorsFixed = 0;
+        }
+    }
+
+    // Extract data symbols (first dataSize symbols)
+    std::vector<uint8_t> dataSymbols(dataSize);
+    for (int i = 0; i < dataSize; i++) {
+        dataSymbols[i] = correctedSymbols[i];
+    }
+
+    return {dataSymbols, errorsFixed};
+}
+
+std::vector<bool> ReedSolomon::encode(const std::vector<bool>& input) {
+    // Convert bits to symbols
+    std::vector<uint8_t> symbols = bitsToSymbols(input);
+
+    // Pad or truncate to match dataSize
+    if (symbols.size() < static_cast<size_t>(dataSize)) {
+        symbols.resize(dataSize, 0); // Pad with zeros
+    } else if (symbols.size() > static_cast<size_t>(dataSize)) {
+        symbols.resize(dataSize);    // Truncate
+    }
+
+    // Encode symbols
+    std::vector<uint8_t> encodedSymbols = encodeSymbols(symbols);
+
+    // Convert back to bits
+    return symbolsToBits(encodedSymbols);
+}
+
+std::pair<std::vector<bool>, int> ReedSolomon::decode(const std::vector<bool>& input) {
+    // Convert bits to symbols
+    std::vector<uint8_t> receivedSymbols = bitsToSymbols(input);
+
+    // Ensure we have the right number of symbols
+    if (receivedSymbols.size() != static_cast<size_t>(dataSize + paritySize)) {
+        return {{}, 0}; // Invalid input size
+    }
+
+    // Decode symbols
+    auto [decodedSymbols, errorsFixed] = decodeSymbols(receivedSymbols);
+
+    // Convert back to bits
+    std::vector<bool> decodedBits = symbolsToBits(decodedSymbols);
+
+    return {decodedBits, errorsFixed};
 }

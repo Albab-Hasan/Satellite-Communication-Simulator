@@ -42,7 +42,9 @@ private:
 
   // Galois Field arithmetic operations
   uint8_t gfMul(uint8_t a, uint8_t b);
+  uint8_t gfDiv(uint8_t a, uint8_t b);
   uint8_t gfInv(uint8_t a);
+  uint8_t gfPow(uint8_t a, int power);
 
   // Conversion between bits and symbols
   std::vector<uint8_t> bitsToSymbols(const std::vector<bool> &bits);
@@ -54,6 +56,13 @@ private:
 
   // Generate generator polynomial for encoding
   std::vector<uint8_t> generatePolynomial();
+
+  // Syndrome computation and error correction
+  std::vector<uint8_t> computeSyndrome(const std::vector<uint8_t> &received);
+  std::vector<uint8_t> findErrorLocator(const std::vector<uint8_t> &syndrome);
+  std::vector<int> findErrorPositions(const std::vector<uint8_t> &errorLocator);
+  std::vector<uint8_t> findErrorValues(const std::vector<uint8_t> &syndrome,
+                                       const std::vector<int> &errorPositions);
 
   // Lookup tables for faster operations
   std::vector<uint8_t> expTable;
