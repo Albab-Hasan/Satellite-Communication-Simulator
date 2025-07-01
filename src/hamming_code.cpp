@@ -120,7 +120,7 @@ std::pair<std::vector<bool>, bool> HammingCode::decodeHamming74(const std::vecto
   bool receivedP2 = encodedBlock[1];
   bool receivedP3 = encodedBlock[3];
 
-  // Calculate parity checks
+  // Calculate parity checks (XOR should be 0 if no errors)
   bool p1Check = receivedP1 ^ receivedD1 ^ receivedD2 ^ receivedD4;
   bool p2Check = receivedP2 ^ receivedD1 ^ receivedD3 ^ receivedD4;
   bool p3Check = receivedP3 ^ receivedD2 ^ receivedD3 ^ receivedD4;

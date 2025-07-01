@@ -15,9 +15,10 @@ namespace Utils
     for (char c : str)
     {
       std::bitset<8> bitset(c);
-      for (int i = 0; i < 8; i++)
+      // Fix endianness: store bits in MSB first order (big endian)
+      for (int i = 7; i >= 0; i--)
       {
-        bits.push_back(bitset[i]); // Push bits starting from LSB
+        bits.push_back(bitset[i]); // Push bits starting from MSB
       }
     }
 
@@ -38,11 +39,12 @@ namespace Utils
     for (size_t i = 0; i < bits.size(); i += 8)
     {
       char c = 0;
+      // Fix endianness: read bits in MSB first order (big endian)
       for (int j = 0; j < 8; j++)
       {
         if (bits[i + j])
         {
-          c |= (1 << j); // Set the bit if true
+          c |= (1 << (7 - j)); // Set the bit if true, MSB first
         }
       }
       result.push_back(c);

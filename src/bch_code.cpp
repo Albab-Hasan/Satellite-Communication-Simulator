@@ -53,25 +53,24 @@ void BCHCode::initTables()
   }
 
   // Generate field elements using the primitive polynomial
-  int mask = 1;
+  int x = 1;
   alphaTo[m] = 0;
 
   for (int i = 0; i < m; i++)
   {
-    alphaTo[i] = mask;
+    alphaTo[i] = x;
     indexOf[alphaTo[i]] = i;
 
-    mask <<= 1;
-    if (mask & (1 << m))
+    x <<= 1;
+    if (x & (1 << m))
     {
-      mask ^= p;
+      x ^= p;
     }
   }
 
   indexOf[0] = -1; // Invalid index for 0
 
   // Continue generating field elements
-  mask = 1;
   for (int i = m; i < n; i++)
   {
     if (alphaTo[i - 1] >= (1 << (m - 1)))
@@ -157,19 +156,27 @@ std::vector<bool> BCHCode::encode(const std::vector<bool> &input)
   }
 
   // Compute redundant bits using generator polynomial
+  std::vector<bool> temp = codeword; // Make a copy to work with
+
   for (int i = 0; i < k; i++)
   {
-    if (codeword[i])
+    if (temp[i])
     {
-      for (size_t j = 0; j < g.size(); j++)
+      for (int j = 0; j < static_cast<int>(g.size()); j++)
       {
-        // Fix: std::vector<bool> doesn't support ^= operator
-        if (g[j] == 1)
+        if (g[j] != 0 && i + j < n)
         {
-          codeword[i + j] = !codeword[i + j]; // XOR operation
+          // XOR operation (^ doesn't work directly on vector<bool> references)
+          temp[i + j] = temp[i + j] != (g[j] == 1);
         }
       }
     }
+  }
+
+  // Copy parity bits to codeword
+  for (int i = k; i < n; i++)
+  {
+    codeword[i] = temp[i];
   }
 
   return codeword;
@@ -187,7 +194,15 @@ std::vector<uint16_t> BCHCode::computeSyndrome(const std::vector<bool> &received
     {
       if (received[j])
       {
-        syn ^= alphaTo[(i + 1) * j % n];
+        if (j == 0)
+        {
+          syn ^= 1;
+        }
+        else
+        {
+          int idx = (i + 1) * j % n;
+          syn ^= alphaTo[idx];
+        }
       }
     }
     syndrome[i] = syn;
@@ -198,97 +213,91 @@ std::vector<uint16_t> BCHCode::computeSyndrome(const std::vector<bool> &received
 
 std::vector<int> BCHCode::findErrorLocations(const std::vector<uint16_t> &syndrome)
 {
-  // Simplified Berlekamp-Massey algorithm
-  std::vector<uint16_t> elp(t + 1, 0); // Error locator polynomial
-  elp[0] = 1;
+  // Berlekamp-Massey algorithm with improved error correction
+  std::vector<uint16_t> elp(t + 2, 0); // Error locator polynomial
+  std::vector<uint16_t> d(t + 2, 0);   // Discrepancy
+  std::vector<uint16_t> l(t + 2, 0);   // Current error locator length
+  std::vector<uint16_t> b(t + 2, 0);   // Correction polynomial
+  std::vector<int> errorLocations;
 
-  std::vector<uint16_t> d(t + 1, 0);
-  std::vector<int> l(t + 1, 0);
-  std::vector<int> u_lu(t + 1, 0);
-  std::vector<uint16_t> s(2 * t, 0);
+  elp[0] = 1; // Initialize error locator polynomial
+  elp[1] = syndrome[0];
 
-  // Copy syndromes
-  for (int i = 0; i < 2 * t; i++)
+  l[0] = 0;
+  l[1] = 0;
+
+  if (syndrome[0] != 0)
   {
-    s[i] = syndrome[i];
+    l[1] = 1;
   }
 
-  // Berlekamp-Massey algorithm
-  d[0] = s[0];
+  int k = 1;
 
-  if (s[0] != 0)
-  {
-    elp[1] = 1;
-    l[0] = 1;
-    u_lu[0] = 0;
-  }
-
+  // Main algorithm loop
   for (int i = 1; i < t; i++)
   {
-    d[i] = s[i];
+    d[i + 1] = syndrome[i];
 
-    for (int j = 1; j <= l[i - 1]; j++)
+    for (int j = 1; j <= l[i]; j++)
     {
-      if (elp[j] != 0 && s[i - j] != 0)
+      if (elp[j] != 0 && syndrome[i - j] != 0)
       {
-        d[i] ^= alphaTo[(indexOf[elp[j]] + indexOf[s[i - j]]) % n];
+        d[i + 1] ^= alphaTo[(indexOf[elp[j]] + indexOf[syndrome[i - j]]) % n];
       }
     }
 
-    if (d[i] == 0)
+    if (d[i + 1] == 0)
     {
-      // No change in polynomial
-      l[i] = l[i - 1];
-      u_lu[i] = u_lu[i - 1] + 1;
+      l[i + 1] = l[i];
+      for (int j = 0; j <= l[i]; j++)
+      {
+        elp[j + i + 1 - k] = elp[j];
+      }
     }
     else
     {
-      // Polynomial update needed
-      int j = i - u_lu[i - 1];
+      int m;
+      for (m = 1; m <= k && d[m] == 0; m++)
+        ;
 
-      if (l[i - 1] < i - j)
+      if (m <= k && l[m] < l[i])
       {
-        // Update polynomial
-        int L = i - j;
-        int dj_idx = indexOf[d[j]];
-        int di_idx = indexOf[d[i]];
-
-        for (int m = 0; m <= l[j]; m++)
+        l[i + 1] = l[i];
+        for (int j = 0; j <= l[i]; j++)
         {
-          if (elp[m] != 0)
-          {
-            elp[m + i - j] ^= alphaTo[(indexOf[elp[m]] + di_idx - dj_idx + n) % n];
-          }
+          b[j + i + 1 - k] = elp[j] ^ alphaTo[(indexOf[d[i + 1]] + n - indexOf[d[m]] + indexOf[b[j + m - k]]) % n];
         }
-
-        l[i] = L;
-        u_lu[i] = i - L;
       }
       else
       {
-        // Compute new polynomial
-        l[i] = l[i - 1];
-        u_lu[i] = u_lu[i - 1];
-
-        for (int m = 0; m <= l[i - 1]; m++)
+        l[i + 1] = i + 1 - k;
+        for (int j = 0; j <= l[k]; j++)
         {
-          uint16_t tmp = 0;
-          if (d[i] != 0 && elp[m] != 0)
+          b[j] = elp[j];
+        }
+
+        for (int j = 0; j <= l[i]; j++)
+        {
+          if (elp[j] != 0 && d[i + 1] != 0)
           {
-            tmp = alphaTo[(indexOf[elp[m]] + indexOf[d[i]] - indexOf[d[0]] + n) % n];
+            elp[j + i + 1 - k] = elp[j] ^ alphaTo[(indexOf[d[i + 1]] + n - indexOf[d[k]] + indexOf[b[j]]) % n];
           }
-          elp[m] ^= tmp;
+          else
+          {
+            elp[j + i + 1 - k] = elp[j];
+          }
         }
       }
+
+      k = i + 1;
     }
   }
 
-  // Find roots of the error locator polynomial
-  std::vector<int> errorLocations;
-  for (int i = 1; i < n; i++)
+  // Find roots of the error locator polynomial using Chien search
+  for (int i = 1; i <= n; i++)
   {
     uint16_t sum = 0;
-    for (int j = 0; j <= t; j++)
+    for (int j = 0; j <= l[t]; j++)
     {
       if (elp[j] != 0)
       {
@@ -298,7 +307,7 @@ std::vector<int> BCHCode::findErrorLocations(const std::vector<uint16_t> &syndro
 
     if (sum == 0)
     {
-      errorLocations.push_back(n - i);
+      errorLocations.push_back(n - i); // Root found - this is an error location
     }
   }
 
@@ -334,18 +343,47 @@ std::pair<std::vector<bool>, int> BCHCode::decode(const std::vector<bool> &input
 
   if (!errorFree)
   {
-    // Find error locations
-    std::vector<int> errorLocations = findErrorLocations(syndrome);
-    errorsFixed = errorLocations.size();
-
-    // Correct errors
-    for (int loc : errorLocations)
+    try
     {
-      received[loc] = !received[loc];
+      // Find error locations
+      std::vector<int> errorLocations = findErrorLocations(syndrome);
+      errorsFixed = errorLocations.size();
+
+      // Correct errors - simply flip the bits at error locations
+      for (int loc : errorLocations)
+      {
+        if (loc >= 0 && loc < n)
+        {
+          received[loc] = !received[loc];
+        }
+      }
+
+      // Verify correction by recomputing syndrome
+      std::vector<uint16_t> checkSyndrome = computeSyndrome(received);
+      bool allZero = true;
+      for (auto &s : checkSyndrome)
+      {
+        if (s != 0)
+        {
+          allZero = false;
+          break;
+        }
+      }
+
+      if (!allZero)
+      {
+        // Correction failed, too many errors
+        errorsFixed = 0;
+      }
+    }
+    catch (const std::exception &e)
+    {
+      // Error correction failed
+      errorsFixed = 0;
     }
   }
 
-  // Extract the message bits
+  // Extract the message bits (first k bits)
   std::vector<bool> decoded(k);
   for (int i = 0; i < k; i++)
   {
