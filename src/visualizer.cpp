@@ -42,8 +42,8 @@ void Visualizer::visualizeBits(const std::vector<bool> &bits,
   os << label << ": ";
 
   // Calculate how many characters will be needed
-  int chars = bits.size() + (bits.size() / groupSize);
-  if (chars + label.size() + 2 > width)
+  int chars = static_cast<int>(bits.size()) + static_cast<int>(bits.size() / groupSize);
+  if (chars + static_cast<int>(label.size()) + 2 > width)
   {
     os << std::endl
        << "  "; // Move to next line with indentation

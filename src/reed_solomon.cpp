@@ -43,7 +43,6 @@ void ReedSolomon::initTables()
     primitive_poly = (1 << symbolSize) | 1; // Default: x^m + 1
   }
 
-  int mask = fieldSize - 1;
   int x = 1;
 
   for (int i = 0; i < fieldSize - 1; i++)
