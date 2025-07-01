@@ -4,11 +4,17 @@
 #include <iomanip>
 #include <sstream>
 #include <limits>
+#include <memory>
+#include <map>
+#include <random>
+#include <chrono>
 
-#include "../include/encoder.h"
-#include "../include/channel.h"
-#include "../include/decoder.h"
+#include "../include/coding_strategy.h"
+#include "../include/coding_factory.h"
 #include "../include/utils.h"
+#include "../include/channel.h"
+#include "../include/visualizer.h"
+#include "../include/metrics.h"
 
 // Function to display a welcome message and instructions
 void displayWelcome() {
@@ -16,9 +22,10 @@ void displayWelcome() {
     std::cout << "           SATELLITE COMMUNICATION SIMULATOR\n";
     std::cout << "===============================================================\n\n";
     std::cout << "This program simulates a satellite communication system with:\n";
-    std::cout << "  1. Data encoding with Hamming(7,4) error correction\n";
+    std::cout << "  1. Data encoding with various error correction codes\n";
     std::cout << "  2. Noisy channel simulation\n";
-    std::cout << "  3. Data decoding with error correction\n\n";
+    std::cout << "  3. Data decoding with error detection and correction\n";
+    std::cout << "  4. Performance metrics and visualization\n\n";
 }
 
 // Function to get a valid double input for error rate
@@ -42,8 +49,42 @@ double getErrorRate() {
     return errorRate;
 }
 
+// Function to select a coding strategy
+std::string selectCodingStrategy() {
+    CodingFactory& factory = CodingFactory::getInstance();
+    std::vector<std::string> strategyNames = factory.getStrategyNames();
+
+    std::cout << "Available error correction codes:\n";
+    for (size_t i = 0; i < strategyNames.size(); i++) {
+        std::cout << "  " << (i + 1) << ". " << strategyNames[i] << "\n";
+        std::cout << "     " << factory.getStrategyDescription(strategyNames[i]) << "\n";
+    }
+
+    int selection = 0;
+    bool validInput = false;
+
+    do {
+        std::cout << "Select error correction code (1-" << strategyNames.size() << "): ";
+        std::string input;
+        std::getline(std::cin, input);
+
+        std::stringstream ss(input);
+        if (ss >> selection && selection >= 1 && selection <= static_cast<int>(strategyNames.size())) {
+            validInput = true;
+        } else {
+            std::cout << "Invalid input. Please enter a number between 1 and " << strategyNames.size() << ".\n";
+        }
+    } while (!validInput);
+
+    return strategyNames[selection - 1];
+}
+
 // Function to run the simulation
 void runSimulation() {
+    // Create components
+    Visualizer visualizer;
+    Metrics metrics;
+
     // Get user message
     std::cout << "Enter message to transmit: ";
     std::string message;
@@ -54,53 +95,65 @@ void runSimulation() {
         return;
     }
 
+    // Select coding strategy
+    std::string strategyName = selectCodingStrategy();
+    std::shared_ptr<CodingStrategy> codingStrategy = CodingFactory::getInstance().createStrategy(strategyName);
+
     // Get error rate
     double errorRate = getErrorRate();
 
-    // Create components
-    Encoder encoder;
+    // Create channel
     Channel channel(errorRate);
-    Decoder decoder;
 
     // Step 1: Convert message to bits
+    metrics.startOperation("String to Bits Conversion");
     std::vector<bool> originalBits = Utils::stringToBits(message);
+    metrics.endOperation("String to Bits Conversion");
 
     std::cout << "\n=== SIMULATION RESULTS ===\n\n";
 
     // Display original bits
-    std::cout << "Original bits: ";
-    Utils::printBits(originalBits);
-    std::cout << std::endl;
+    visualizer.visualizeBits(originalBits, "Original bits", std::cout, 8);
 
     // Step 2: Encode the message
-    std::vector<bool> encodedBits = encoder.encode(message);
-    std::cout << "Encoded bits (with Hamming code): ";
-    Utils::printBits(encodedBits, std::cout, 7);  // Group by 7 for Hamming(7,4) blocks
-    std::cout << std::endl;
+    metrics.startOperation("Encoding");
+    std::vector<bool> encodedBits = codingStrategy->encode(originalBits);
+    metrics.endOperation("Encoding");
+    metrics.recordTransmission(originalBits.size(), encodedBits.size());
+
+    visualizer.visualizeBits(encodedBits, "Encoded bits (" + strategyName + ")", std::cout,
+                           strategyName.find("Hamming") != std::string::npos ? 7 : 8);
 
     // Step 3: Transmit through noisy channel
+    metrics.startOperation("Channel Transmission");
     std::vector<bool> transmittedBits = channel.transmit(encodedBits);
+    metrics.endOperation("Channel Transmission");
 
     // Count errors introduced by channel
     int channelErrors = Utils::countDifferences(encodedBits, transmittedBits);
+    metrics.recordErrors(encodedBits, transmittedBits);
 
-    std::cout << "Transmitted bits (after noise): ";
-    Utils::printBits(transmittedBits, std::cout, 7);
-    std::cout << std::endl;
+    visualizer.visualizeDifferences(encodedBits, transmittedBits, "Transmission with noise", std::cout,
+                                  strategyName.find("Hamming") != std::string::npos ? 7 : 8);
 
     std::cout << "Bit errors introduced: " << channelErrors << " of "
               << encodedBits.size() << " bits ("
               << std::fixed << std::setprecision(2)
               << (static_cast<double>(channelErrors) / encodedBits.size() * 100)
-              << "%)\n";
+              << "%)\n\n";
 
     // Step 4: Decode the received message
-    auto [decodedBits, errorsFixed] = decoder.decode(transmittedBits);
+    metrics.startOperation("Decoding");
+    auto [decodedBits, errorsFixed] = codingStrategy->decode(transmittedBits);
+    metrics.endOperation("Decoding");
+    metrics.recordErrorCorrection(channelErrors, errorsFixed);
 
-    std::cout << "Errors fixed by Hamming code: " << errorsFixed << std::endl;
+    std::cout << "Errors fixed by " << strategyName << ": " << errorsFixed << std::endl << std::endl;
 
     // Step 5: Convert bits back to string
+    metrics.startOperation("Bits to String Conversion");
     std::string receivedMessage = Utils::bitsToString(decodedBits);
+    metrics.endOperation("Bits to String Conversion");
 
     // Compare original and received message
     bool successful = (receivedMessage == message);
@@ -112,6 +165,12 @@ void runSimulation() {
     if (!successful) {
         std::cout << "Uncorrected errors detected in the message.\n";
     }
+
+    // Display performance metrics
+    std::cout << std::endl;
+    visualizer.drawSeparator();
+    metrics.printSummary();
+    visualizer.drawSeparator();
 }
 
 // Main function

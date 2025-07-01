@@ -35,4 +35,11 @@ clean:
 run: all
 	./$(TARGET)
 
-.PHONY: all directories clean run
+# List of all source and header files
+list:
+	@echo "Source files:"
+	@ls -1 $(SRC_DIR)/*.cpp
+	@echo "Header files:"
+	@ls -1 include/*.h
+
+.PHONY: all directories clean run list
