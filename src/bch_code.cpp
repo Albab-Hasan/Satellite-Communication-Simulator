@@ -163,7 +163,11 @@ std::vector<bool> BCHCode::encode(const std::vector<bool> &input)
     {
       for (size_t j = 0; j < g.size(); j++)
       {
-        codeword[i + j] ^= (g[j] == 1);
+        // Fix: std::vector<bool> doesn't support ^= operator
+        if (g[j] == 1)
+        {
+          codeword[i + j] = !codeword[i + j]; // XOR operation
+        }
       }
     }
   }
